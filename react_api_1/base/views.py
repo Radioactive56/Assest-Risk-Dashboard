@@ -1,5 +1,5 @@
 from django.shortcuts import render
-from .models import Meta_Dashboard,Nmap_Core_Dashboard,Scan,Host,Meta_Host_Table,Meta_Service_Table,Meta_Vulnerability_Table,Meta_Scan_Table
+from .models import Totp,Meta_Dashboard,Nmap_Core_Dashboard,Scan,Host,Meta_Host_Table,Meta_Service_Table,Meta_Vulnerability_Table,Meta_Scan_Table
 from .serializers import Meta_serializer,Nmap_serializer,Scan_Serializer,Host_Serializer,Meta_Host_Serializer,Service_Serializer,Vulnerability_Serializer,Meta_scan_Serializer,UserSerializer
 from rest_framework.response import Response
 from rest_framework.decorators import api_view,permission_classes
@@ -21,25 +21,28 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.paginator import Paginator
 from django.core.cache import cache
 
-from django.core.mail import send_mail
-
 from django.http import JsonResponse
 from captcha.image import ImageCaptcha
 from io import BytesIO
 import random
 import string
+import pyotp
+import time
  
 # Generate Captcha
 def generate_captcha(request):
-    captcha_text = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    # selects 6 characters which are later combined together by join function...
+    captcha_text = ''.join(random.choices(string.digits, k=6))
     print(captcha_text)
     cache.set('captcha_code', captcha_text, timeout=300)  # Store in cache for 5 minutes
     image = ImageCaptcha()
     data = BytesIO()
     image.write(captcha_text, data)
+    # to move the file pointer back to beginning of BytesIO stream
     data.seek(0)
     return HttpResponse(data, content_type="image/png")
  
+
 
 
 # from rest_framework.pagination import PageNumberPagination
@@ -292,41 +295,58 @@ def get_chart_monthly(request):
 #             print(item.errors)
 #             return Response({},status=status.HTTP_400_BAD_REQUEST)
  
-def send_test_email():
-    try:
-        send_mail(
-            'Logged in to ISAE',
-            'You have logged in to the site ........... If not you please revert to the mail back...',
-            'neoemailtest12@gmail.com',
-            ['manavdhruve25@gmail.com']
-        )
-        return Response('Email Sent Successfully ')
-    except Exception as e:
-        print(f"Error sending email: {e}")
-
-@api_view(["POST"])
-def check_login(request):
-    data = json.loads(request.body)
-    username= data.get('username')
-    password= data.get('password')
+@api_view(['POST'])
+def auth_setup(request):
+    data = request.data
+    username = data.get('username')
+    password = data.get('password')
     user_captcha = data.get('captcha')
 
     server_captcha = cache.get('captcha_code')
     if not server_captcha or user_captcha != server_captcha:
         return Response({"message": "Invalid captcha!"},status = status.HTTP_400_BAD_REQUEST)
- 
+
     user = authenticate(username=username,password=password)
     if user:
-        permission_list = user.get_all_permissions()
-        print(permission_list)
-        cache.set('permission_list',permission_list,timeout=1800)
-        refresh = RefreshToken.for_user(user)
-        access_token = str(refresh.access_token)
-        refresh_token = str(refresh)
+        secret = pyotp.random_base32()
+        Totp.objects.update_or_create(user=user, defaults={"secret": secret})
 
-        send_test_email()
+        # Generate otpauth:// URL
+        generated_totp = pyotp.TOTP(secret)
+        otp_uri = generated_totp.provisioning_uri(name=username, issuer_name="Infra Asset Risk Dashboard")
 
-        return Response({'Token':access_token,'user':user.username},status= status.HTTP_200_OK)
+        return Response({'secret':secret,'uri':otp_uri},status=status.HTTP_200_OK)
+
+    else:
+        return Response({'message':'user not found'},status=status.HTTP_403_FORBIDDEN)
+
+ 
+@api_view(["POST"])
+def check_login(request):
+    data = json.loads(request.body)
+    username= data.get('username')
+    totp= data.get('totp')
+    # user_captcha = data.get('captcha')
+
+    # server_captcha = cache.get('captcha_code')
+    # if not server_captcha or user_captcha != server_captcha:
+    #     return Response({"message": "Invalid captcha!"},status = status.HTTP_400_BAD_REQUEST)
+ 
+    # user = authenticate(username=username,password=password)
+    user = User.objects.get(username=username)
+    print(user)
+    if user:
+        totp_obj = Totp.objects.get(user=user)
+        new_generated_totp = pyotp.TOTP(totp_obj.secret)
+
+        if new_generated_totp.verify(totp,valid_window=0):
+            permission_list = user.get_all_permissions()
+            cache.set('permission_list',permission_list,timeout=1800)
+            refresh = RefreshToken.for_user(user)
+            access_token = str(refresh.access_token)
+            refresh_token = str(refresh)
+
+            return Response({'Token':access_token,'user':user.username},status= status.HTTP_200_OK)
     else:
         return Response({"error":"Invalid Login"},status=status.HTTP_403_FORBIDDEN)
  
@@ -353,7 +373,6 @@ def add_user(request):
         return Response({'error':'You dont have the permission to perform this action...'},status=status.HTTP_403_FORBIDDEN)
     else:
         data=json.loads(request.body)
-        print(data)
         username=data.get('username')
         permission_active_status=data.get('permission_active_status')
         permission_Staff_status=data.get('permission_Staff_status')
@@ -369,8 +388,8 @@ def add_user(request):
         try:
             user=User.objects.get(username=username)
             if user :
-                print("Data already exists")
-                return JsonResponse({"status":"Failed"},status=400)
+                print("User already exists")
+                return JsonResponse({"status":"Failed",'message':'User already exists'},status=status.HTTP_400_BAD_REQUEST)
         except:
             user=User.objects.create_user(username=username,password=password)
             user.is_staff=permission_Staff_status
@@ -623,7 +642,7 @@ def asset_summary():
 @api_view(['GET'])
 def callwithoutcp(request):
     data = asset_summary()
-    return Response(data)
+    return Response(data,status=200)
 
 @api_view(['GET'])
 def call(request):
@@ -670,7 +689,6 @@ def call(request):
 def get_nmap(request):
     if request.method=="GET":
         permission_list = cache.get('permission_list')
-        print(permission_list)
         if 'base.view_nmap_core_dashboard' in permission_list:
             print('Yes it is present...........................')
             data=Nmap_Core_Dashboard.objects.all()
@@ -678,24 +696,25 @@ def get_nmap(request):
             return Response(new_data.data,status=status.HTTP_200_OK)
         else:
             return Response([],status=status.HTTP_403_FORBIDDEN)
-    return Response([],status=status.HTTP_400_BAD_REQUEST)
  
  
 @permission_classes([IsAuthenticated])
 @api_view(['GET'])
 def get_nmap_by_id(request,id):
     if request.method=="GET":
-        data=Nmap_Core_Dashboard.objects.filter(Scan_id=id)
-        serialized_data=Nmap_serializer(data,many=True)
-        return Response(serialized_data.data,status=status.HTTP_200_OK)
-    return Response([],status=status.HTTP_404_NOT_FOUND)
+        permission_list = cache.get('permission_list')
+        if 'base.view_nmap_core_dashboard' in permission_list:
+                data=Nmap_Core_Dashboard.objects.filter(Scan_id=id)
+                serialized_data=Nmap_serializer(data,many=True)
+                return Response(serialized_data.data,status=status.HTTP_200_OK)
+        else:
+            return Response([],status=status.HTTP_403_FORBIDDEN)
  
 @permission_classes([IsAuthenticated])
 @api_view(["POST"])
 def add_Scan(request):
     if request.method=='POST':
         serializer=Nmap_serializer(data=request.data)
-        print(serializer)
         if serializer.is_valid():
             permission_list = cache.get('permission_list')
             if 'base.add_nmap_core_dashboard' in permission_list:
@@ -710,21 +729,23 @@ def add_Scan(request):
 @permission_classes([IsAuthenticated])
 @api_view(['POST'])
 def delete_multiple_scan(request):
-    permission_list = cache.get('permission_list')
-    if 'base.delete_nmap_core_dashboard' not in permission_list:
-        return Response({'error':'You dont have the permission to perform this action...'},status=status.HTTP_403_FORBIDDEN)
-    else:
-        data = json.loads(request.body)
-        c=len(data)
-        d=0
-        for i in data:
-            d+=1
-            item = Nmap_Core_Dashboard.objects.filter(Scan_id=i)
-            item[0].delete()
-        if d==c:
-            return Response([],status=status.HTTP_200_OK)
-        else:
-            return Response([],status=status.HTTP_400_BAD_REQUEST)
+    try:
+        permission_list = cache.get('permission_list')
+        if 'base.delete_nmap_core_dashboard' in permission_list:
+            data = json.loads(request.body)
+            print(data)
+            c=len(data)
+            d=0
+            for i in data:
+                d+=1
+                item =Nmap_Core_Dashboard.objects.filter(Scan_id=i)
+                item[0].delete()
+            if d==c:
+                return Response([],status=status.HTTP_200_OK)
+            else:
+                return Response([],status=status.HTTP_400_BAD_REQUEST)
+    except:
+        return Response([],status=status.HTTP_403_FORBIDDEN)
  
 @permission_classes([IsAuthenticated])
 @api_view(['PUT'])
@@ -734,10 +755,11 @@ def update_scan(request,id):
         serializer=Nmap_serializer(instance=item[0],data=request.data,partial=True)
         if serializer.is_valid():
             permission_list=cache.get('permission_list')
-            if 'base.change_nmap_core_dashboard' in permission_list:
-                serializer.save()
-                return Response(serializer.data,status=status.HTTP_200_OK)
-            else:
+            try:
+                if 'base.change_nmap_core_dashboard' in permission_list:
+                    serializer.save()
+                    return Response(serializer.data,status=status.HTTP_200_OK)
+            except:
                 return Response([],status=status.HTTP_403_FORBIDDEN)
         return Response(serializer.errors,status=status.HTTP_204_NO_CONTENT)
     except:
@@ -749,24 +771,25 @@ def update_scan(request,id):
 @api_view(["GET"])
 def get_meta(request):
     if request.method=="GET":
-        permission_list=cache.get('permission_list')
-        if 'base.view_meta_dashboard' in permission_list:
-            data=Meta_Dashboard.objects.all()
-            meta_data=Meta_serializer(data,many=True)
-            return Response(meta_data.data,status=status.HTTP_200_OK)
-        else:
-            return Response([],status=status.HTTP_403_FORBIDDEN)
-    return Response([],status=status.HTTP_400_BAD_REQUEST)
+            permission_list=cache.get('permission_list')
+            if 'base.view_meta_dashboard' in permission_list:
+                data=Meta_Dashboard.objects.all()
+                meta_data=Meta_serializer(data,many=True)
+                return Response(meta_data.data,status=status.HTTP_200_OK)
+            else:    
+                return Response([],status=status.HTTP_403_FORBIDDEN)
  
 @permission_classes([IsAuthenticated])
 @api_view(['GET'])
 def get_meta_id(request,id):
     if request.method=='GET':
-        item=Meta_Dashboard.objects.filter(Pending_id=id)
-        serializer=Meta_serializer(item,many=True)
-        return Response(serializer.data,status=status.HTTP_200_OK)
-    else:
-        return Response([],status=status.HTTP_400_BAD_REQUEST)
+        permission_list=cache.get('permission_list')
+        if 'base.view_meta_dashboard' in permission_list:
+            item=Meta_Dashboard.objects.filter(Pending_id=id)
+            serializer=Meta_serializer(item,many=True)
+            return Response(serializer.data,status=status.HTTP_200_OK)
+        else:
+            return Response([],status=status.HTTP_403_FORBIDDEN)
  
 @permission_classes([IsAuthenticated])
 @api_view(['POST'])
@@ -774,10 +797,11 @@ def addMeta(request):
     item=Meta_serializer(data=request.data)
     if item.is_valid():
         permission_list = cache.get('permission_list')
-        if 'base.add_meta_dashboard' in permission_list:
-            item.save()
-            return Response(item.data,status=status.HTTP_200_OK)
-        else:
+        try:
+            if 'base.add_meta_dashboard' in permission_list:
+                item.save()
+                return Response(item.data,status=status.HTTP_200_OK)
+        except:
             return Response([],status=status.HTTP_403_FORBIDDEN)
     else:
         return Response(item.errors,status.HTTP_400_BAD_REQUEST)
@@ -785,34 +809,37 @@ def addMeta(request):
 @permission_classes([IsAuthenticated])
 @api_view(['POST'])
 def delete_multiple_meta(request):
-    permission_list = cache.get('permission_list')
-    if 'base.delete_meta_dashboard' in permission_list:
-        data = json.loads(request.body)
-        c=len(data)
-        d=0
-        for i in data:
-            d+=1
-            item =Meta_Dashboard.objects.filter(Pending_id=i)
-            item[0].delete()
-        if d==c:
-            return Response([],status=status.HTTP_200_OK)
+    try:
+        permission_list = cache.get('permission_list')
+        if 'base.delete_meta_dashboard' in permission_list:
+            data = json.loads(request.body)
+            c=len(data)
+            d=0
+            for i in data:
+                d+=1
+                item =Meta_Dashboard.objects.filter(Pending_id=i)
+                item[0].delete()
+            if d==c:
+                return Response([],status=status.HTTP_200_OK)
+            else:
+                return Response([],status=status.HTTP_400_BAD_REQUEST)
         else:
-            return Response([],status=status.HTTP_400_BAD_REQUEST)
-    else:
+            return Response('',status=status.HTTP_403_FORBIDDEN)
+    except:
         return Response([],status=status.HTTP_403_FORBIDDEN)
  
 @permission_classes([IsAuthenticated])
 @api_view(['PUT'])
 def update_meta_id(request,id):
     item=Meta_Dashboard.objects.filter(Pending_id=id)
-    print(item[0])
     data=Meta_serializer(instance=item[0],data=request.data,partial=True)
     if data.is_valid():
-        permission_list = cache.get('permission_list')
-        if 'base.change_meta_dashboard' in permission_list:
-            data.save()
-            return Response({},status=status.HTTP_200_OK)
-        else:
+        try:
+            permission_list = cache.get('permission_list')
+            if 'base.change_meta_dashboard' in permission_list:
+                data.save()
+                return Response({},status=status.HTTP_200_OK)
+        except:
             return Response([],status=status.HTTP_403_FORBIDDEN)
     return Response({},status=status.HTTP_400_BAD_REQUEST)
 
@@ -827,27 +854,27 @@ def get_scan(request):
             return Response(serialized_data.data,status=status.HTTP_200_OK)
         else:
             return Response([],status=status.HTTP_403_FORBIDDEN)
-    return Response([],status=status.HTTP_400_BAD_REQUEST)
  
 @permission_classes([IsAuthenticated])
 @api_view(['GET'])
 def get_scan_by_id(request,id):
-    if request.method=="GET":
+    permission_list = cache.get('permission_list')
+    if 'base.view_scan' in permission_list:
         data=Scan.objects.filter(scan_id=id)
         serialized_data=Scan_Serializer(data,many=True)
         return Response(serialized_data.data,status=status.HTTP_200_OK)
-    return Response([],status=status.HTTP_404_NOT_FOUND)
  
 @permission_classes([IsAuthenticated])
 @api_view(['POST'])
 def addscantable(request):
     item=Scan_Serializer(data=request.data)
     if item.is_valid():
-        permission_list = cache.get('permission_list')
-        if 'base.add_scan'in permission_list:
-            item.save()
-            return Response({},status=status.HTTP_200_OK)
-        else:
+        try:
+            permission_list = cache.get('permission_list')
+            if 'base.add_scan'in permission_list:
+                item.save()
+                return Response({},status=status.HTTP_200_OK)
+        except:
             return Response([],status=status.HTTP_403_FORBIDDEN)
     else:
         print(item.errors)
@@ -856,23 +883,24 @@ def addscantable(request):
 @permission_classes([IsAuthenticated])
 @api_view(['POST'])
 def delete_multiple_scan_table(request):
-    permission_list=cache.get('permission_list')
-    if 'base.delete_scan' in permission_list:
-        data = json.loads(request.body)
-        print(data)
-        c=len(data)
-        d=0
-        for i in data:
-            d+=1
-            item =Scan.objects.filter(scan_id=i)
-            print(i)
-            print(item)
-            item[0].delete()
-        if d==c and c!=0:
-            return Response([],status=status.HTTP_200_OK)
-        else:
-            return Response([],status=status.HTTP_400_BAD_REQUEST)
-    else:
+    try:
+        permission_list=cache.get('permission_list')
+        if 'base.delete_scan' in permission_list:
+            data = json.loads(request.body)
+            print(data)
+            c=len(data)
+            d=0
+            for i in data:
+                d+=1
+                item =Scan.objects.filter(scan_id=i)
+                print(i)
+                print(item)
+                item[0].delete()
+            if d==c and c!=0:
+                return Response([],status=status.HTTP_200_OK)
+            else:
+                return Response([],status=status.HTTP_400_BAD_REQUEST)
+    except:
         return Response([],status=status.HTTP_403_FORBIDDEN)
  
  
@@ -883,11 +911,12 @@ def update_scantable_id(request,id):
     print(item[0])
     data=Scan_Serializer(instance=item[0],data=request.data,partial=True)
     if data.is_valid():
-        permission_list=cache.get('permission_list')
-        if 'base.change_scan' in permission_list:
-            data.save()
-            return Response({},status=status.HTTP_200_OK)
-        else:
+        try:
+            permission_list=cache.get('permission_list')
+            if 'base.change_scan' in permission_list:
+                data.save()
+                return Response({},status=status.HTTP_200_OK)
+        except:
             return Response([],status=status.HTTP_403_FORBIDDEN)
     return Response({},status=status.HTTP_400_BAD_REQUEST)
  
@@ -902,17 +931,19 @@ def get_host(request):
             return Response(serialized_data.data,status=status.HTTP_200_OK)
         else:
             return Response([],status=status.HTTP_403_FORBIDDEN)
-    return Response([],status=status.HTTP_400_BAD_REQUEST)
  
 @permission_classes([IsAuthenticated])
 @api_view(['GET'])
 def get_host_by_id(request,id):
-    if request.method=="GET":
-        data=Host.objects.filter(ip_address=id)
-        print(data)
-        serialized_data=Host_Serializer(data,many=True)
-        return Response(serialized_data.data,status=status.HTTP_200_OK)
-    return Response([],status=status.HTTP_404_NOT_FOUND)
+    try:
+        permission_list = cache.get('permission_list')
+        if 'base.view_host' in permission_list:
+            data=Host.objects.filter(ip_address=id)
+            print(data)
+            serialized_data=Host_Serializer(data,many=True)
+            return Response(serialized_data.data,status=status.HTTP_200_OK)
+    except:
+        return Response([],status=status.HTTP_404_NOT_FOUND)
  
  
 @permission_classes([IsAuthenticated])
@@ -920,11 +951,12 @@ def get_host_by_id(request,id):
 def addhosttable(request):
     item=Host_Serializer(data=request.data)
     if item.is_valid():
-        permission_list = cache.get('permission_list')
-        if 'base.add_host' in permission_list:
-            item.save()
-            return Response({},status=status.HTTP_200_OK)
-        else:
+        try:
+            permission_list = cache.get('permission_list')
+            if 'base.add_host' in permission_list:
+                item.save()
+                return Response({},status=status.HTTP_200_OK)
+        except:
             return Response([],status=status.HTTP_403_FORBIDDEN)
     else:
         print(item.errors)
@@ -933,20 +965,21 @@ def addhosttable(request):
 @permission_classes([IsAuthenticated])
 @api_view(['POST'])
 def delete_multiple_host_table(request):
-    permission_list = cache.get('permission_list')
-    if 'base.delete_host' in permission_list:
-        data = json.loads(request.body)
-        c=len(data)
-        d=0
-        for i in data:
-            d+=1
-            item = Host.objects.filter(ip_address=i)
-            item[0].delete()
-        if d==c:
-            return Response([],status=status.HTTP_200_OK)
-        else:
-            return Response([],status=status.HTTP_400_BAD_REQUEST)
-    else:
+    try:
+        permission_list = cache.get('permission_list')
+        if 'base.delete_host' in permission_list:
+            data = json.loads(request.body)
+            c=len(data)
+            d=0
+            for i in data:
+                d+=1
+                item = Host.objects.filter(ip_address=i)
+                item[0].delete()
+            if d==c:
+                return Response([],status=status.HTTP_200_OK)
+            else:
+                return Response([],status=status.HTTP_400_BAD_REQUEST)
+    except:
         return Response([],status=status.HTTP_403_FORBIDDEN)
  
 @permission_classes([IsAuthenticated])
@@ -956,11 +989,12 @@ def update_hosttable_id(request,id):
     print(item[0])
     data=Host_Serializer(instance=item[0],data=request.data,partial=True)
     if data.is_valid():
-        permission_list = cache.get('permission_list')
-        if 'base.change_host' in permission_list:
-            data.save()
-            return Response({},status=status.HTTP_200_OK)
-        else:
+        try:
+            permission_list = cache.get('permission_list')
+            if 'base.change_host' in permission_list:
+                data.save()
+                return Response({},status=status.HTTP_200_OK)
+        except:
             return Response([],status=status.HTTP_403_FORBIDDEN)
     return Response({},status=status.HTTP_400_BAD_REQUEST)
  
@@ -977,16 +1011,17 @@ def get_pending_meta(request):
             return Response(meta_data.data,status=status.HTTP_200_OK)
         else:
             return Response([],status=status.HTTP_404_NOT_FOUND)
-    return Response([],status=status.HTTP_400_BAD_REQUEST)
  
 @permission_classes([IsAuthenticated])
 @api_view(['GET'])
 def get_pendingmeta_id(request,id):
-    if request.method=='GET':
-        item=Meta_Dashboard.objects.filter(Pending_id=id)
-        serializer=Meta_serializer(item,many=True)
-        return Response(serializer.data,status=status.HTTP_200_OK)
-    else:
+    try:
+        permission_list=cache.get('permission_list')
+        if 'base.view_meta_dashboard' in permission_list:
+            item=Meta_Dashboard.objects.filter(Pending_id=id)
+            serializer=Meta_serializer(item,many=True)
+            return Response(serializer.data,status=status.HTTP_200_OK)
+    except:
         return Response([],status=status.HTTP_400_BAD_REQUEST)
  
  
@@ -996,11 +1031,12 @@ def addPendingMeta(request):
     item=Meta_serializer(data=request.data)
     print(item)
     if item.is_valid():
-        permission_list=cache.get('permission_list')
-        if 'base.add_meta_dashboard' in permission_list:
-            item.save()
-            return Response(item.data,status=status.HTTP_200_OK)
-        else:
+        try:
+            permission_list=cache.get('permission_list')
+            if 'base.add_meta_dashboard' in permission_list:
+                item.save()
+                return Response(item.data,status=status.HTTP_200_OK)
+        except:
             return Response([],status=status.HTTP_403_FORBIDDEN)
     else:
         print(item.errors)
@@ -1009,20 +1045,21 @@ def addPendingMeta(request):
 @permission_classes([IsAuthenticated])
 @api_view(['POST'])
 def delete_multiple_pendingmeta_table(request):
-    permission_list=cache.get('permission_list')
-    if 'base.delete_meta_dashboard' in permission_list:
-        data = json.loads(request.body)
-        c=len(data)
-        d=0
-        for i in data:
-            d+=1
-            item = Meta_Dashboard.objects.filter(Pending_id=i)
-            item[0].delete()
-        if d==c:
-            return Response([],status=status.HTTP_200_OK)
-        else:
-            return Response([],status=status.HTTP_400_BAD_REQUEST)
-    else:
+    try:
+        permission_list=cache.get('permission_list')
+        if 'base.delete_meta_dashboard' in permission_list:
+            data = json.loads(request.body)
+            c=len(data)
+            d=0
+            for i in data:
+                d+=1
+                item = Meta_Dashboard.objects.filter(Pending_id=i)
+                item[0].delete()
+            if d==c:
+                return Response([],status=status.HTTP_200_OK)
+            else:
+                return Response([],status=status.HTTP_400_BAD_REQUEST)
+    except:
         return Response([],status=status.HTTP_403_FORBIDDEN)
  
 
@@ -1033,11 +1070,12 @@ def update_pendingmeta_id(request,id):
         print(item[0])
         data=Meta_serializer(instance=item[0],data=request.data,partial=True)
         if data.is_valid():
-            permission_list=cache.get('permission_list')
-            if 'base.change_meta_dashboard' in permission_list:
-                data.save()
-                return Response({},status=status.HTTP_200_OK)
-            else:
+            try:
+                permission_list=cache.get('permission_list')
+                if 'base.change_meta_dashboard' in permission_list:
+                    data.save()
+                    return Response({},status=status.HTTP_200_OK)
+            except:
                 return Response([],status=status.HTTP_403_FORBIDDEN)
         return Response({},status=status.HTTP_400_BAD_REQUEST)
  
@@ -1052,27 +1090,30 @@ def get_meta_scan(request):
             return Response(serialized_data.data,status=status.HTTP_200_OK)
         else:
             return Response([],status=status.HTTP_404_NOT_FOUND)
-    return Response([],status=status.HTTP_400_BAD_REQUEST)
  
 @permission_classes([IsAuthenticated])
 @api_view(['GET'])
 def get_metascan_by_id(request,id):
-    if request.method=="GET":
-        data=Meta_Scan_Table.objects.filter(Scan_id=id)
-        serialized_data=Meta_scan_Serializer(data,many=True)
-        return Response(serialized_data.data,status=status.HTTP_200_OK)
-    return Response([],status=status.HTTP_404_NOT_FOUND)
+    try:
+        permission_list=cache.get('permission_list')
+        if 'base.view_meta_scan_table' in permission_list:
+            data=Meta_Scan_Table.objects.filter(Scan_id=id)
+            serialized_data=Meta_scan_Serializer(data,many=True)
+            return Response(serialized_data.data,status=status.HTTP_200_OK)
+    except:
+        return Response([],status=status.HTTP_404_NOT_FOUND)
  
 @permission_classes([IsAuthenticated])
 @api_view(['POST'])
 def addMeta_Scan(request):
     item=Meta_scan_Serializer(data=request.data)
     if item.is_valid():
-        permission_list=cache.get('permission_list')
-        if 'base.add_meta_scan_table' in permission_list:
-            item.save()
-            return Response(item.data,status=status.HTTP_200_OK)
-        else:
+        try:
+            permission_list=cache.get('permission_list')
+            if 'base.add_meta_scan_table' in permission_list:
+                item.save()
+                return Response(item.data,status=status.HTTP_200_OK)
+        except:
             return Response([],status=status.HTTP_403_FORBIDDEN)
     else:
         print(item.errors)
@@ -1081,20 +1122,21 @@ def addMeta_Scan(request):
 @permission_classes([IsAuthenticated])
 @api_view(['POST'])
 def delete_multiple_metascan_table(request):
-    permission_list=cache.get('permission_list')
-    if 'base.delete_meta_scan_table' in permission_list:
-        data = json.loads(request.body)
-        c=len(data)
-        d=0
-        for i in data:
-            d+=1
-            item = Meta_Scan_Table.objects.filter(Scan_id=i)
-            item[0].delete()
-        if d==c:
-            return Response([],status=status.HTTP_200_OK)
-        else:
-            return Response([],status=status.HTTP_400_BAD_REQUEST)
-    else:
+    try:
+        permission_list=cache.get('permission_list')
+        if 'base.delete_meta_scan_table' in permission_list:
+            data = json.loads(request.body)
+            c=len(data)
+            d=0
+            for i in data:
+                d+=1
+                item = Meta_Scan_Table.objects.filter(Scan_id=i)
+                item[0].delete()
+            if d==c:
+                return Response([],status=status.HTTP_200_OK)
+            else:
+                return Response([],status=status.HTTP_400_BAD_REQUEST)
+    except:
         return Response([],status=status.HTTP_403_FORBIDDEN)
  
 @permission_classes([IsAuthenticated])
@@ -1104,35 +1146,38 @@ def update_metascantable_id(request,id):
     print(item[0])
     data=Meta_scan_Serializer(instance=item[0],data=request.data,partial=True)
     if data.is_valid():
-        permission_list=cache.get('permission_list')
-        if 'base.change_meta_scan_table' in permission_list:
-            data.save()
-            return Response({},status=status.HTTP_200_OK)
-        else:
-            return Response([],stst)
+        try:
+            permission_list=cache.get('permission_list')
+            if 'base.change_meta_scan_table' in permission_list:
+                data.save()
+                return Response({},status=status.HTTP_200_OK)
+        except:
+            return Response([],status=status.HTTP_403_FORBIDDEN)
     return Response({},status=status.HTTP_400_BAD_REQUEST)
  
 @permission_classes([IsAuthenticated])
 @api_view(['GET'])
 def get_meta_host(request):
     if request.method=="GET":
-        permission_list = cache.set('permission_list')
+        permission_list = cache.get('permission_list')
         if 'base.view_meta_host_table' in permission_list:
             data=Meta_Host_Table.objects.all()
             serialized_data=Meta_Host_Serializer(data,many=True)
             return Response(serialized_data.data,status=status.HTTP_200_OK)
         else:
             return Response([],status=status.HTTP_403_FORBIDDEN)
-    return Response([],status=status.HTTP_400_BAD_REQUEST)
  
 @permission_classes([IsAuthenticated])
 @api_view(['GET'])
 def get_metahost_by_id(request,id):
-    if request.method=="GET":
-        data=Meta_Host_Table.objects.filter(Host_id=id)
-        serialized_data=Meta_Host_Serializer(data,many=True)
-        return Response(serialized_data.data,status=status.HTTP_200_OK)
-    return Response([],status=status.HTTP_404_NOT_FOUND)
+    try:
+        permission_list = cache.get('permission_list')
+        if 'base.view_meta_host_table' in permission_list:
+            data=Meta_Host_Table.objects.filter(Host_id=id)
+            serialized_data=Meta_Host_Serializer(data,many=True)
+            return Response(serialized_data.data,status=status.HTTP_200_OK)
+    except:
+        return Response([],status=status.HTTP_404_NOT_FOUND)
  
 @permission_classes([IsAuthenticated])
 @api_view(['POST'])
@@ -1142,12 +1187,14 @@ def addMeta_Host(request):
     item=Meta_Host_Serializer(data=request.data)
     print(item)
     if item.is_valid():
-        permission_list = cache.set('permission_list')
-        if 'base.add_meta_host_table' in permission_list:
-            item.save()
-            return Response(item.data,status=status.HTTP_200_OK)
-        else:
+        try:
+            permission_list = cache.get('permission_list')
+            if 'base.add_meta_host_table' in permission_list:
+                item.save()
+                return Response(item.data,status=status.HTTP_200_OK)
+        except:
             return Response([],status=status.HTTP_403_FORBIDDEN)
+
     else:
         print(item.errors)
         return Response(item.errors,status.HTTP_400_BAD_REQUEST)
@@ -1155,20 +1202,21 @@ def addMeta_Host(request):
 @permission_classes([IsAuthenticated])
 @api_view(['POST'])
 def delete_multiple_metashost_table(request):
-    permission_list = cache.set('permission_list')
-    if 'base.delete_meta_host_table' in permission_list:
-        data = json.loads(request.body)
-        c=len(data)
-        d=0
-        for i in data:
-            d+=1
-            item = Meta_Host_Table.objects.filter(Host_id=i)
-            item[0].delete()
-        if d==c:
-            return Response([],status=status.HTTP_200_OK)
-        else:
-            return Response([],status=status.HTTP_400_BAD_REQUEST)
-    else:
+    try:
+        permission_list = cache.get('permission_list')
+        if 'base.delete_meta_host_table' in permission_list:
+            data = json.loads(request.body)
+            c=len(data)
+            d=0
+            for i in data:
+                d+=1
+                item = Meta_Host_Table.objects.filter(Host_id=i)
+                item[0].delete()
+            if d==c:
+                return Response([],status=status.HTTP_200_OK)
+            else:
+                return Response([],status=status.HTTP_400_BAD_REQUEST)
+    except:
         return Response([],status=status.HTTP_403_FORBIDDEN)
  
 @permission_classes([IsAuthenticated])
@@ -1178,11 +1226,12 @@ def update_metahosttable_id(request,id):
     print(item[0])
     data=Meta_Host_Serializer(instance=item[0],data=request.data,partial=True)
     if data.is_valid():
-        permission_list = cache.set('permission_list')
-        if 'base.change_meta_host_table' in permission_list:
-            data.save()
-            return Response({},status=status.HTTP_200_OK)
-        else:
+        try:
+            permission_list = cache.get('permission_list')
+            if 'base.change_meta_host_table' in permission_list:
+                data.save()
+                return Response({},status=status.HTTP_200_OK)
+        except:
             return Response({},status=status.HTTP_403_FORBIDDEN)
     return Response({},status=status.HTTP_400_BAD_REQUEST)
 
@@ -1199,16 +1248,18 @@ def get_meta_service(request):
             return Response(serialized_data.data,status=status.HTTP_200_OK)
         else:
             return Response([],status=status.HTTP_404_NOT_FOUND)
-    return Response([],status=status.HTTP_400_BAD_REQUEST)
  
 @permission_classes([IsAuthenticated])
 @api_view(['GET'])
 def get_metaservice_by_id(request,id):
-    if request.method=="GET":
-        data=Meta_Service_Table.objects.filter(Service_id=id)
-        serialized_data=Service_Serializer(data,many=True)
-        return Response(serialized_data.data,status=status.HTTP_200_OK)
-    return Response([],status=status.HTTP_404_NOT_FOUND)
+    try:
+        permission_list = cache.get('permission_list')
+        if 'base.view_meta_service_table' in permission_list:
+            data=Meta_Service_Table.objects.filter(Service_id=id)
+            serialized_data=Service_Serializer(data,many=True)
+            return Response(serialized_data.data,status=status.HTTP_200_OK)
+    except:
+        return Response([],status=status.HTTP_404_NOT_FOUND)
  
 @permission_classes([IsAuthenticated])
 @api_view(['POST'])
@@ -1216,11 +1267,12 @@ def addMeta_Service(request):
     item=Service_Serializer(data=request.data)
     print(item)
     if item.is_valid():
-        permission_list = cache.get('permission_list')
-        if 'base.view_meta_service_table' in permission_list:
-            item.save()
-            return Response(item.data,status=status.HTTP_200_OK)
-        else:
+        try:
+            permission_list = cache.get('permission_list')
+            if 'base.view_meta_service_table' in permission_list:
+                item.save()
+                return Response(item.data,status=status.HTTP_200_OK)
+        except:
             return Response([],status=status.HTTP_403_FORBIDDEN)
     else:
         print(item.errors)
@@ -1229,20 +1281,21 @@ def addMeta_Service(request):
 @permission_classes([IsAuthenticated])
 @api_view(['POST'])
 def delete_multiple_metaservice_table(request):
-    permission_list = cache.get('permission_list')
-    if 'base.delete_meta_service_table' in permission_list:
-        data = json.loads(request.body)
-        c=len(data)
-        d=0
-        for i in data:
-            d+=1
-            item = Meta_Service_Table.objects.filter(Service_id=i)
-            item[0].delete()
-        if d==c:
-            return Response([],status=status.HTTP_200_OK)
-        else:
-            return Response([],status=status.HTTP_400_BAD_REQUEST)
-    else:
+    try:
+        permission_list = cache.get('permission_list')
+        if 'base.delete_meta_service_table' in permission_list:
+            data = json.loads(request.body)
+            c=len(data)
+            d=0
+            for i in data:
+                d+=1
+                item = Meta_Service_Table.objects.filter(Service_id=i)
+                item[0].delete()
+            if d==c:
+                return Response([],status=status.HTTP_200_OK)
+            else:
+                return Response([],status=status.HTTP_400_BAD_REQUEST)
+    except:
         return Response([],status=status.HTTP_403_FORBIDDEN)
  
 @permission_classes([IsAuthenticated])
@@ -1252,11 +1305,12 @@ def update_metaservicetable_id(request,id):
     print(item[0])
     data=Service_Serializer(instance=item[0],data=request.data,partial=True)
     if data.is_valid():
-        permission_list = cache.get('permission_list')
-        if 'base.change_meta_service_table' in permission_list:
-            data.save()
-            return Response({},status=status.HTTP_200_OK)
-        else:
+        try:
+            permission_list = cache.get('permission_list')
+            if 'base.change_meta_service_table' in permission_list:
+                data.save()
+                return Response({},status=status.HTTP_200_OK)
+        except:
             return Response({},status=status.HTTP_403_FORBIDDEN)
     return Response({},status=status.HTTP_400_BAD_REQUEST)
 
@@ -1271,17 +1325,19 @@ def get_meta_vulnerability(request):
             return Response(serialized_data.data,status=status.HTTP_200_OK)
         else:
             return Response([],status=status.HTTP_403_FORBIDDEN)
-    return Response([],status=status.HTTP_400_BAD_REQUEST)
  
  
 @permission_classes([IsAuthenticated])
 @api_view(['GET'])
 def get_metavulnerability_by_id(request,id):
-    if request.method=="GET":
-        data=Meta_Vulnerability_Table.objects.filter(Vulnerability_id=id)
-        serialized_data=Vulnerability_Serializer(data,many=True)
-        return Response(serialized_data.data,status=status.HTTP_200_OK)
-    return Response([],status=status.HTTP_404_NOT_FOUND)
+    try:
+        permission_list = cache.get('permission_list')
+        if 'base.view_meta_vulnerability_table' in permission_list:
+            data=Meta_Vulnerability_Table.objects.filter(Vulnerability_id=id)
+            serialized_data=Vulnerability_Serializer(data,many=True)
+            return Response(serialized_data.data,status=status.HTTP_200_OK)
+    except:
+        return Response([],status=status.HTTP_404_NOT_FOUND)
  
 @permission_classes([IsAuthenticated])
 @api_view(['POST'])
@@ -1289,11 +1345,12 @@ def addMeta_Vulterability(request):
         item=Vulnerability_Serializer(data=request.data)
         print(item)
         if item.is_valid():
-            permission_list = cache.get('permission_list')
-            if 'base.add_meta_vulnerability_table' in permission_list:
-                item.save()
-                return Response(item.data,status=status.HTTP_200_OK)
-            else:
+            try:
+                permission_list = cache.get('permission_list')
+                if 'base.add_meta_vulnerability_table' in permission_list:
+                    item.save()
+                    return Response(item.data,status=status.HTTP_200_OK)
+            except:
                 return Response([],status=status.HTTP_403_FORBIDDEN)
         else:
             print(item.errors)
@@ -1302,20 +1359,21 @@ def addMeta_Vulterability(request):
 @permission_classes([IsAuthenticated])
 @api_view(['POST'])
 def delete_multiple_metavulnerability_table(request):
-    permission_list = cache.get('permission_list')
-    if 'base.delete_meta_vulnerability_table' in permission_list:
-        data = json.loads(request.body)
-        c=len(data)
-        d=0
-        for i in data:
-            d+=1
-            item = Meta_Vulnerability_Table.objects.filter(Vulnerability_id=i)
-            item[0].delete()
-        if d==c:
-            return Response([],status=status.HTTP_200_OK)
-        else:
-            return Response([],status=status.HTTP_400_BAD_REQUEST)
-    else:
+    try:
+        permission_list = cache.get('permission_list')
+        if 'base.delete_meta_vulnerability_table' in permission_list:
+            data = json.loads(request.body)
+            c=len(data)
+            d=0
+            for i in data:
+                d+=1
+                item = Meta_Vulnerability_Table.objects.filter(Vulnerability_id=i)
+                item[0].delete()
+            if d==c:
+                return Response([],status=status.HTTP_200_OK)
+            else:
+                return Response([],status=status.HTTP_400_BAD_REQUEST)
+    except:
         return Response([],status=status.HTTP_403_FORBIDDEN)
  
 @api_view(['PUT'])
@@ -1324,13 +1382,19 @@ def update_metavulenrabilitytable_id(request,id):
     print(item[0])
     data=Vulnerability_Serializer(instance=item[0],data=request.data,partial=True)
     if data.is_valid():
-        permission_list = cache.get('permission_list')
-        if 'base.change_meta_vulnerability_table' in permission_list:
-            data.save()
-            return Response({},status=status.HTTP_200_OK)
-        else:
+        try:
+            permission_list = cache.get('permission_list')
+            if 'base.change_meta_vulnerability_table' in permission_list:
+                data.save()
+                return Response({},status=status.HTTP_200_OK)
+        except:
             return Response({},status=status.HTTP_403_FORBIDDEN)
     return Response({},status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['GET'])
+def logout(request):
+    cache.clear()
+    return Response({},status=status.HTTP_200_OK)
 
 
 

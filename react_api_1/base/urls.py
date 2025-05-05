@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.urls import path,include
-from .views import generate_captcha,callwithoutcp,call,user_delete,get_chart_weekly,get_chart_monthly,validate,get_nmap,get_meta,get_scan,get_host,get_pending_meta,get_meta_host,get_meta_service,get_meta_vulnerability,get_meta_scan,check_login,add_user,send_csv,send_users,get_nmap_by_id,update_scan,add_Scan,get_meta_id,update_meta_id,VA_chartAPI, asset_summary,addMeta,delete_multiple_scan,addscantable,addhosttable,addPendingMeta,addMeta_Scan,addMeta_Host,addMeta_Service,addMeta_Vulterability,update_meta_id,get_scan_by_id,get_host_by_id,get_metascan_by_id,get_metahost_by_id,get_metaservice_by_id,get_metavulnerability_by_id,update_scantable_id,update_hosttable_id,update_pendingmeta_id,update_metascantable_id,update_metahosttable_id,update_metaservicetable_id,update_metavulenrabilitytable_id,delete_multiple_meta,delete_multiple_scan_table,delete_multiple_host_table,delete_multiple_metascan_table,delete_multiple_pendingmeta_table,delete_multiple_metashost_table,delete_multiple_metaservice_table,delete_multiple_metavulnerability_table,get_pendingmeta_id
+from .views import auth_setup,logout,generate_captcha,callwithoutcp,call,user_delete,get_chart_weekly,get_chart_monthly,validate,get_nmap,get_meta,get_scan,get_host,get_pending_meta,get_meta_host,get_meta_service,get_meta_vulnerability,get_meta_scan,check_login,add_user,send_csv,send_users,get_nmap_by_id,update_scan,add_Scan,get_meta_id,update_meta_id,VA_chartAPI, asset_summary,addMeta,delete_multiple_scan,addscantable,addhosttable,addPendingMeta,addMeta_Scan,addMeta_Host,addMeta_Service,addMeta_Vulterability,update_meta_id,get_scan_by_id,get_host_by_id,get_metascan_by_id,get_metahost_by_id,get_metaservice_by_id,get_metavulnerability_by_id,update_scantable_id,update_hosttable_id,update_pendingmeta_id,update_metascantable_id,update_metahosttable_id,update_metaservicetable_id,update_metavulenrabilitytable_id,delete_multiple_meta,delete_multiple_scan_table,delete_multiple_host_table,delete_multiple_metascan_table,delete_multiple_pendingmeta_table,delete_multiple_metashost_table,delete_multiple_metaservice_table,delete_multiple_metavulnerability_table,get_pendingmeta_id
 
 
 
@@ -59,10 +59,12 @@ urlpatterns = [
     path('metaservicetableUpdate/<int:id>/',update_metaservicetable_id,name='update_metaservicetable_id'),
     path('metavulnerabilitytableUpdate/<int:id>/',update_metavulenrabilitytable_id,name='update_metavulenrabilitytable_id'),
     path('va_chartAPI/',VA_chartAPI,name="va_chartAPI"),
-    path('asset_summary',call, name="asset_summary"),
+    path('asset_summary/',call, name="asset_summary"),
     path('assestwithoutcp',callwithoutcp),
     path('chartdatamonthly/',get_chart_monthly),
     path('chartdataweekly/',get_chart_weekly),
     path('deleteuser/',user_delete),
     path('generate-captcha/',generate_captcha),
+    path('clear/',logout),
+    path('setup/',auth_setup),
 ]

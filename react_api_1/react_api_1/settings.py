@@ -23,9 +23,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = "django-insecure-=)83&@4qey%9^&(q+(-5l72fby4er3zlv&=jw729izjqm-6eq-"
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG = True
 
-ALLOWED_HOSTS = ['localhost','127.0.0.1:3000']
+ALLOWED_HOSTS = ['localhost','127.0.0.1:3000','127.0.0.1','192.168.223.242']
 
 
 # Application definition
@@ -57,7 +57,7 @@ MIDDLEWARE = [
 ]
 
 CORS_ALLOWED_ORIGINS=[
-    "http://localhost:3000",
+    "http://localhost:3000",'http://127.0.0.1',
 ]
 
 ROOT_URLCONF = "react_api_1.urls"
@@ -154,14 +154,3 @@ CACHES = {
         'LOCATION': 'unique-snowflake',
     }
 }
-
-
-
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com' # For Gmail, use 'smtp.gmail.com'
-EMAIL_PORT = 587  # For TLS
-EMAIL_USE_TLS = True  # Use TLS (True or False)\]\]
-EMAIL_USE_SSL = False  # Set to True if using SSL
-EMAIL_HOST_USER = 'neoemailtest12@gmail.com'  # Your email address
-EMAIL_HOST_PASSWORD = 'arycdxrykhsyskka'  # Your email password or app password
-DEFAULT_FROM_EMAIL = 'neoemailtest12@gmail.com'

@@ -1,5 +1,5 @@
 from django.db import models
-from django.contrib.auth.models import AbstractUser
+from django.contrib.auth.models import User
 
 # Create your models here.
 
@@ -278,11 +278,8 @@ class Scan(models.Model):
     class Meta:
         ordering = ["-scan_id"]
 
-    def __str__(self) -> str:
-        return "{} | {}".format(
-            self.scan_id,
-            self.host,
-        )
+    def __int__(self):
+        return self.scan_id
 
 
 class PT_Age(models.Model):
@@ -312,14 +309,7 @@ class PT_Age(models.Model):
     vuln_cvss=models.IntegerField(null=True,blank=True)
     vuln_risk_score=models.IntegerField(null=True,blank=True)
     vuln_tags=models.CharField(max_length=30,null=True,blank=True)
-    
-class Users(models.Model):
-    username=models.CharField(max_length=50,primary_key=True)
-    password=models.CharField(max_length=50)
-    permission_Staff_status=models.BooleanField()
-    permission_active_status=models.BooleanField()
-    permission_Superuser_status=models.BooleanField()
-    privilege=models.JSONField(max_length=256,blank=True,null=True)
 
-    def __str__(self):
-        return self.username
+class Totp(models.Model):
+    user = models.OneToOneField(User,on_delete=models.CASCADE)
+    secret = models.CharField(max_length=32)
