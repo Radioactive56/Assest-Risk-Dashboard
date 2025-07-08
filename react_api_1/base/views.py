@@ -281,20 +281,13 @@ def get_chart_monthly(request):
  
     return Response(data)
  
-# @permission_classes([IsAuthenticated])
-# @api_view(['POST'])
-# def addscantable(request):
-#     if not request.user.is_superuser():
-#         return Response({'error':'You dont have the permission to perform this action...'},status=status.HTTP_403_FORBIDDEN)
-#     else:
-#         item=Scan_Serializer(data=request.data)
-#         if item.is_valid():
-#             item.save()
-#             return Response({},status=status.HTTP_200_OK)
-#         else:
-#             print(item.errors)
-#             return Response({},status=status.HTTP_400_BAD_REQUEST)
- 
+
+@api_view(['GET'])
+def sme(request):
+    data = Meta_Dashboard.objects.all()
+    serialized_data = Meta_serializer(data,many=True)
+    return Response(serialized_data.data,status=status.HTTP_200_OK)
+
 @api_view(['POST'])
 def auth_setup(request):
     data = request.data
@@ -326,6 +319,8 @@ def check_login(request):
     data = json.loads(request.body)
     username= data.get('username')
     totp= data.get('totp')
+    print(totp)
+    print(username)
     # user_captcha = data.get('captcha')
 
     # server_captcha = cache.get('captcha_code')
@@ -337,16 +332,18 @@ def check_login(request):
     print(user)
     if user:
         totp_obj = Totp.objects.get(user=user)
+        print(totp_obj.secret)
         new_generated_totp = pyotp.TOTP(totp_obj.secret)
+        print(new_generated_totp)
 
         if new_generated_totp.verify(totp,valid_window=0):
             permission_list = user.get_all_permissions()
             cache.set('permission_list',permission_list,timeout=1800)
             refresh = RefreshToken.for_user(user)
             access_token = str(refresh.access_token)
-            refresh_token = str(refresh)
-
             return Response({'Token':access_token,'user':user.username},status= status.HTTP_200_OK)
+        else:
+            return Response("Invalid Login",status=status.HTTP_403_FORBIDDEN)
     else:
         return Response({"error":"Invalid Login"},status=status.HTTP_403_FORBIDDEN)
  
@@ -508,6 +505,7 @@ def VA_chartAPI(request):
                 mylist.append(result)            
    
     json_result = json.dumps(mylist, indent=4)
+    
     return Response(mylist)
  
 def categorize_aging(ports_dict):
@@ -641,45 +639,53 @@ def asset_summary():
 
 @api_view(['GET'])
 def callwithoutcp(request):
-    data = asset_summary()
-    return Response(data,status=200)
+    cached_data = cache.get('new_assest')
+    if cached_data:
+        print(cached_data)
+        return Response(cached_data,status=status.HTTP_200_OK)
+    else:
+        data = asset_summary()
+        flattened_data = data[0]
+        print(flattened_data)
+        cache.set('new_assest', flattened_data, 15*60*15)
+        return Response(flattened_data,status=200)
 
-@api_view(['GET'])
-def call(request):
-    page = int(request.GET.get('page', 1))  # Default to page 1
-    page_size = 100  # Fixed page size of 100 tasks per page
-    cache_timeout = 15 * 60 
+# @api_view(['GET'])
+# def call(request):
+#     page = int(request.GET.get('page', 1))  # Default to page 1
+#     page_size = 100  # Fixed page size of 100 tasks per page
+#     cache_timeout = 15 * 60 
  
-    # Generate a unique cache key for the requested page
-    cache_key = f"tasks_page_{page}_size_{page_size}"
+#     # Generate a unique cache key for the requested page
+#     cache_key = f"tasks_page_{page}_size_{page_size}"
  
-    # Check if the data for this page is already in the cache
-    cached_page_data = cache.get(cache_key)
-    if cached_page_data:
-        return JsonResponse(cached_page_data)
+#     # Check if the data for this page is already in the cache
+#     cached_page_data = cache.get(cache_key)
+#     if cached_page_data:
+#         return JsonResponse(cached_page_data)
  
-    # Fetch the full dataset from the function
-    data = asset_summary()
-    flat_data = [item for sublist in data for item in sublist]  # Flatten the list
-    tasks = flat_data
-    paginator = Paginator(tasks, page_size)
+#     # Fetch the full dataset from the function
+#     data = asset_summary()
+#     flat_data = [item for sublist in data for item in sublist]  # Flatten the list
+#     tasks = flat_data
+#     paginator = Paginator(tasks, page_size)
  
-    try:
-        page_data = paginator.page(page)
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=400)
+#     try:
+#         page_data = paginator.page(page)
+#     except Exception as e:
+#         return JsonResponse({'error': str(e)}, status=400)
  
-    # Prepare the response data for the requested page
-    response_data = {
-        'data': page_data.object_list,  # Paginated tasks
-        'has_next': page_data.has_next(),  # Whether there are more pages
-        'total': paginator.count,  # Total number of tasks
-    }
+#     # Prepare the response data for the requested page
+#     response_data = {
+#         'data': page_data.object_list,  # Paginated tasks
+#         'has_next': page_data.has_next(),  # Whether there are more pages
+#         'total': paginator.count,  # Total number of tasks
+#     }
  
-    # Cache the page-specific data
-    cache.set(cache_key, response_data, cache_timeout)
+#     # Cache the page-specific data
+#     cache.set(cache_key, response_data, cache_timeout)
  
-    return JsonResponse(response_data)
+#     return JsonResponse(response_data)
  
 
 
