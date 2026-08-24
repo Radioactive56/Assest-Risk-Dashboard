@@ -1,11 +1,3 @@
-
----
-
-### 2. Asset Risk Dashboard with TOTP
-
-This one is actually **stronger for an HR/recruiter email** because it demonstrates security + backend + dashboard development.
-
-```markdown
 # Asset Risk Dashboard
 
 A security-focused asset management and risk monitoring dashboard built to provide centralized visibility into infrastructure assets, their security posture, and associated risks.
